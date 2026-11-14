@@ -1,5 +1,5 @@
 """
-Subscription & Lifecycle Operations API Endpoints (Tasks 7 & 8).
+Subscription & Lifecycle Operations API Endpoints.
 Handles subscription creation, plan switching, pausing, resuming, cancelling,
 and audit logs.
 """
@@ -33,8 +33,8 @@ from app.services.state_machine import (
     transition_subscription,
     get_allowed_transitions,
     validate_transition,
-    ALLOWED_TRANSITIONS,
 )
+from app.services.audit import log_system_event
 
 router = APIRouter(tags=["Subscriptions"])
 
@@ -106,7 +106,7 @@ def get_subscription(
     "",
     response_model=SubscriptionResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new subscription (Task 7)",
+    summary="Create a new subscription",
 )
 def create_subscription(
     payload: CreateSubscriptionRequest,
@@ -114,7 +114,7 @@ def create_subscription(
     db: Session = Depends(get_db),
 ):
     """
-    Task 7: Subscription Creation API
+    Subscription Creation Endpoint:
     1. Validate customer exists (404 if missing).
     2. Validate plan exists (404 if missing) and is not archived (400 if archived).
     3. Calculate start_date & assign trial period or activate immediately:
@@ -123,7 +123,7 @@ def create_subscription(
        - Else:
          status = 'active', activated_at = start_date, end_date = +30d (monthly) or +365d (yearly).
     4. Create initial BillingCycle record (pending).
-    5. Write AuditLog entry (action="CREATE").
+    5. Write AuditLog entry (action="SUBSCRIPTION_CREATED").
     6. Return complete subscription details.
     """
     # 1. Determine and validate customer
@@ -199,13 +199,15 @@ def create_subscription(
         updated_at=start_date,
     )
     db.add(initial_cycle)
+    db.commit()
 
-    # 5. Write AuditLog
+    # 5. Centralized Audit Log
     performer = current_user.email if current_user else customer.email
-    audit = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="subscription",
         entity_id=new_sub.id,
-        action="CREATE",
+        action="SUBSCRIPTION_CREATED",
         old_value=None,
         new_value={
             "status": new_sub.status,
@@ -215,23 +217,20 @@ def create_subscription(
             "billing_interval": plan.billing_interval,
         },
         performed_by=performer,
-        created_at=start_date,
     )
-    db.add(audit)
-    db.commit()
     db.refresh(new_sub)
 
     return _build_sub_response(new_sub)
 
 
 # ==========================================
-# Task 8: Subscription Lifecycle Operations
+# Subscription Lifecycle Operations
 # ==========================================
 
 @router.post(
     "/{id}/change-plan",
     response_model=SubscriptionResponse,
-    summary="Change plan for an active subscription (Task 8)",
+    summary="Change plan for an active subscription",
 )
 def change_subscription_plan(
     id: int,
@@ -240,11 +239,11 @@ def change_subscription_plan(
     db: Session = Depends(get_db),
 ):
     """
-    Task 8.1: Change Plan
+    Plan Change Operation:
     - Validates subscription exists and is not cancelled.
     - Validates target plan exists and is not archived.
     - Updates subscription.plan_id and recalculates end_date if active.
-    - Writes AuditLog with action="CHANGE_PLAN".
+    - Writes AuditLog with action="PLAN_CHANGED".
     """
     sub = db.query(Subscription).filter(Subscription.id == id).first()
     if not sub:
@@ -282,19 +281,19 @@ def change_subscription_plan(
         duration = 365 if new_plan.billing_interval == "yearly" else 30
         sub.end_date = now + timedelta(days=duration)
 
+    db.commit()
+    db.refresh(sub)
+
     performer = current_user.email if current_user else "system"
-    audit = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="subscription",
         entity_id=sub.id,
-        action="CHANGE_PLAN",
+        action="PLAN_CHANGED",
         old_value=str(old_plan_id),
         new_value=str(new_plan.id),
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit)
-    db.commit()
-    db.refresh(sub)
 
     return _build_sub_response(sub)
 
@@ -302,7 +301,7 @@ def change_subscription_plan(
 @router.post(
     "/{id}/pause",
     response_model=SubscriptionResponse,
-    summary="Pause a subscription (Task 8)",
+    summary="Pause an active or trial subscription",
 )
 def pause_subscription(
     id: int,
@@ -310,11 +309,11 @@ def pause_subscription(
     db: Session = Depends(get_db),
 ):
     """
-    Task 8.2: Pause Subscription
+    Pause Subscription Operation:
     - Validates state machine transition to 'paused' (allowed from 'trial' or 'active').
     - Rejects if already 'paused' or 'cancelled' with HTTP 400.
     - Sets paused_at and status_changed_at timestamps.
-    - Writes AuditLog with action="PAUSE_SUBSCRIPTION".
+    - Writes AuditLog with action="SUBSCRIPTION_PAUSED".
     """
     sub = db.query(Subscription).filter(Subscription.id == id).first()
     if not sub:
@@ -335,7 +334,6 @@ def pause_subscription(
             detail="Cannot pause a cancelled subscription.",
         )
 
-    # Validate with state machine
     validate_transition(sub.status, SubscriptionStatus.PAUSED.value)
 
     old_status = sub.status
@@ -345,19 +343,19 @@ def pause_subscription(
     sub.status_changed_at = now
     sub.updated_at = now
 
+    db.commit()
+    db.refresh(sub)
+
     performer = current_user.email if current_user else "system"
-    audit = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="subscription",
         entity_id=sub.id,
-        action="PAUSE_SUBSCRIPTION",
+        action="SUBSCRIPTION_PAUSED",
         old_value={"status": old_status},
         new_value={"status": sub.status},
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit)
-    db.commit()
-    db.refresh(sub)
 
     return _build_sub_response(sub)
 
@@ -365,7 +363,7 @@ def pause_subscription(
 @router.post(
     "/{id}/resume",
     response_model=SubscriptionResponse,
-    summary="Resume a paused subscription (Task 8)",
+    summary="Resume a paused subscription",
 )
 def resume_subscription(
     id: int,
@@ -373,10 +371,10 @@ def resume_subscription(
     db: Session = Depends(get_db),
 ):
     """
-    Task 8.3: Resume Subscription
+    Resume Subscription Operation:
     - Validates current status is 'paused' (raises 400 if not paused).
     - Transitions to 'active', updates activated_at and status_changed_at timestamps.
-    - Writes AuditLog with action="RESUME_SUBSCRIPTION".
+    - Writes AuditLog with action="SUBSCRIPTION_RESUMED".
     """
     sub = db.query(Subscription).filter(Subscription.id == id).first()
     if not sub:
@@ -400,19 +398,19 @@ def resume_subscription(
     sub.status_changed_at = now
     sub.updated_at = now
 
+    db.commit()
+    db.refresh(sub)
+
     performer = current_user.email if current_user else "system"
-    audit = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="subscription",
         entity_id=sub.id,
-        action="RESUME_SUBSCRIPTION",
+        action="SUBSCRIPTION_RESUMED",
         old_value={"status": old_status},
         new_value={"status": sub.status},
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit)
-    db.commit()
-    db.refresh(sub)
 
     return _build_sub_response(sub)
 
@@ -420,7 +418,7 @@ def resume_subscription(
 @router.post(
     "/{id}/cancel",
     response_model=SubscriptionResponse,
-    summary="Cancel a subscription (Task 8)",
+    summary="Cancel a subscription",
 )
 def cancel_subscription(
     id: int,
@@ -428,11 +426,11 @@ def cancel_subscription(
     db: Session = Depends(get_db),
 ):
     """
-    Task 8.4: Cancel Subscription
+    Cancel Subscription Operation:
     - Validates state machine transition to 'cancelled' (rejects if already cancelled with 400).
     - Sets end_date, cancelled_at, and status_changed_at.
     - Marks any pending BillingCycle records as 'completed'.
-    - Writes AuditLog with action="CANCEL_SUBSCRIPTION".
+    - Writes AuditLog with action="SUBSCRIPTION_CANCELLED".
     """
     sub = db.query(Subscription).filter(Subscription.id == id).first()
     if not sub:
@@ -470,25 +468,25 @@ def cancel_subscription(
         cycle.status = BillingCycleStatus.COMPLETED.value
         cycle.updated_at = now
 
+    db.commit()
+    db.refresh(sub)
+
     performer = current_user.email if current_user else "system"
-    audit = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="subscription",
         entity_id=sub.id,
-        action="CANCEL_SUBSCRIPTION",
+        action="SUBSCRIPTION_CANCELLED",
         old_value={"status": old_status},
         new_value={"status": sub.status},
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit)
-    db.commit()
-    db.refresh(sub)
 
     return _build_sub_response(sub)
 
 
 # ==========================================
-# Task 4 & Backward-Compatible Endpoints
+# State Machine & Transition Inquiries
 # ==========================================
 
 @router.get(

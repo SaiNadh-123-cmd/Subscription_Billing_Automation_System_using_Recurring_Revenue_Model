@@ -1,5 +1,5 @@
 """
-Customer Management API Endpoints (Task 6).
+Customer Management API Endpoints.
 Handles customer creation, retrieval with subscription details, listing, and profile updates.
 """
 
@@ -8,12 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Customer, Subscription, AuditLog, utc_now
+from app.models import Customer, utc_now
 from app.schemas import CustomerCreate, CustomerUpdate, CustomerResponse, CustomerDetailResponse, SubscriptionResponse
 from app.auth import hash_password, get_optional_user
 from app.services.state_machine import get_allowed_transitions
+from app.services.audit import log_system_event
 
-router = APIRouter(tags=["Customer Management"])
+router = APIRouter(tags=["Customers"])
 
 
 @router.post(
@@ -62,12 +63,13 @@ def create_customer(
     db.commit()
     db.refresh(customer)
 
-    # Audit Log
+    # Centralized Audit Log
     performer = current_user.email if current_user else "admin"
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="customer",
         entity_id=customer.id,
-        action="CREATE",
+        action="CUSTOMER_CREATED",
         old_value=None,
         new_value={
             "name": customer.name,
@@ -75,10 +77,7 @@ def create_customer(
             "company_name": customer.company_name,
         },
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
-    db.commit()
 
     return customer
 
@@ -202,6 +201,8 @@ def update_customer(
 
     now = utc_now()
     customer.updated_at = now
+    db.commit()
+    db.refresh(customer)
 
     new_data = {
         "name": customer.name,
@@ -209,19 +210,16 @@ def update_customer(
         "company_name": customer.company_name,
     }
 
-    # Audit Log
+    # Centralized Audit Log
     performer = current_user.email if current_user else "admin"
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="customer",
         entity_id=customer.id,
-        action="UPDATE",
+        action="CUSTOMER_UPDATED",
         old_value=old_data,
         new_value=new_data,
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
 
-    db.commit()
-    db.refresh(customer)
     return customer

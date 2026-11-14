@@ -65,7 +65,7 @@ class TokenResponse(BaseModel):
 
 
 # ==========================================
-# Task 5: Plan Management Schemas
+# Plan Management Schemas
 # ==========================================
 
 class PlanCreate(BaseModel):
@@ -118,7 +118,7 @@ class PlanResponse(BaseModel):
 
 
 # ==========================================
-# Task 6: Customer Management Schemas
+# Customer Management Schemas
 # ==========================================
 
 class CustomerCreate(BaseModel):
@@ -161,7 +161,7 @@ class CustomerResponse(BaseModel):
 
 
 # ==========================================
-# Task 7 & 8: Subscription Schemas
+# Subscription Schemas
 # ==========================================
 
 class CreateSubscriptionRequest(BaseModel):
@@ -215,6 +215,52 @@ class SubscriptionTransitionsResponse(BaseModel):
     allowed_transitions: List[str]
     is_terminal: bool
 
+
+# ==========================================
+# Billing Engine & Invoice Schemas
+# ==========================================
+
+class BillingEngineTriggerResponse(BaseModel):
+    processed_subscriptions: int
+    new_invoices_created: int
+    details: Optional[List[Dict[str, Any]]] = None
+
+
+class InvoiceResponse(BaseModel):
+    id: int
+    invoice_number: str
+    subscription_id: int
+    customer_id: int
+    invoice_date: datetime
+    due_date: datetime
+    subtotal: float
+    tax_amount: float
+    total_amount: float
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class BillingCycleResponse(BaseModel):
+    id: int
+    subscription_id: int
+    cycle_start_date: datetime
+    cycle_end_date: datetime
+    renewal_date: datetime
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ==========================================
+# Audit Logging Schemas
+# ==========================================
 
 class AuditLogResponse(BaseModel):
     id: int

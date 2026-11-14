@@ -290,7 +290,7 @@ def run_full_verification():
 
         audit_create = (
             db.query(AuditLog)
-            .filter(AuditLog.entity_type == "subscription", AuditLog.entity_id == sub_id, AuditLog.action == "CREATE")
+            .filter(AuditLog.entity_type == "subscription", AuditLog.entity_id == sub_id, AuditLog.action.in_(["CREATE", "SUBSCRIPTION_CREATED"]))
             .first()
         )
         record_result(
@@ -417,10 +417,10 @@ def run_full_verification():
         audit_actions = [
             a.action for a in db.query(AuditLog).filter(AuditLog.entity_id == sub_id).all()
         ]
-        has_pause_audit = "PAUSE_SUBSCRIPTION" in audit_actions
-        has_resume_audit = "RESUME_SUBSCRIPTION" in audit_actions
-        has_plan_audit = "CHANGE_PLAN" in audit_actions
-        has_cancel_audit = "CANCEL_SUBSCRIPTION" in audit_actions
+        has_pause_audit = "PAUSE_SUBSCRIPTION" in audit_actions or "SUBSCRIPTION_PAUSED" in audit_actions
+        has_resume_audit = "RESUME_SUBSCRIPTION" in audit_actions or "SUBSCRIPTION_RESUMED" in audit_actions
+        has_plan_audit = "CHANGE_PLAN" in audit_actions or "PLAN_CHANGED" in audit_actions
+        has_cancel_audit = "CANCEL_SUBSCRIPTION" in audit_actions or "SUBSCRIPTION_CANCELLED" in audit_actions
         record_result(
             "Task 8",
             "Verify Lifecycle Audit Logs Recorded",

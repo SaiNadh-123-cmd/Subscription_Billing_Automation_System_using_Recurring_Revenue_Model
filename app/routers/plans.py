@@ -1,5 +1,5 @@
 """
-Plan Management API Endpoints (Task 5).
+Plan Management API Endpoints.
 Handles plan creation, listing, updating, archiving, and safe deletion with audit logging.
 """
 
@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Plan, Subscription, AuditLog, utc_now
+from app.models import Plan, Subscription, utc_now
 from app.schemas import PlanCreate, PlanUpdate, PlanResponse
 from app.auth import get_optional_user, Customer
+from app.services.audit import log_system_event
 
-router = APIRouter(tags=["Plan Management"])
+router = APIRouter(tags=["Plans"])
 
 
 @router.post(
@@ -59,12 +60,13 @@ def create_plan(
     db.commit()
     db.refresh(plan)
 
-    # Audit Log
+    # Centralized Audit Log
     performer = current_user.email if current_user else "admin"
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="plan",
         entity_id=plan.id,
-        action="CREATE",
+        action="PLAN_CREATED",
         old_value=None,
         new_value={
             "name": plan.name,
@@ -74,10 +76,7 @@ def create_plan(
             "features": plan.features,
         },
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
-    db.commit()
 
     return plan
 
@@ -185,21 +184,21 @@ def update_plan(
         "features": plan.features,
     }
 
-    # Audit Log
+    db.commit()
+    db.refresh(plan)
+
+    # Centralized Audit Log
     performer = current_user.email if current_user else "admin"
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="plan",
         entity_id=plan.id,
-        action="UPDATE",
+        action="PLAN_UPDATED",
         old_value=old_data,
         new_value=new_data,
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
 
-    db.commit()
-    db.refresh(plan)
     return plan
 
 
@@ -227,21 +226,20 @@ def archive_plan(
     now = utc_now()
     plan.is_archived = True
     plan.updated_at = now
+    db.commit()
+    db.refresh(plan)
 
     performer = current_user.email if current_user else "admin"
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="plan",
         entity_id=plan.id,
-        action="ARCHIVE",
+        action="PLAN_ARCHIVED",
         old_value={"is_archived": False},
         new_value={"is_archived": True},
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
 
-    db.commit()
-    db.refresh(plan)
     return plan
 
 
@@ -289,21 +287,19 @@ def delete_plan(
         )
 
     plan_name = plan.name
-    now = utc_now()
     performer = current_user.email if current_user else "admin"
 
     db.delete(plan)
+    db.commit()
 
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="plan",
         entity_id=id,
-        action="DELETE",
+        action="PLAN_DELETED",
         old_value={"name": plan_name},
         new_value=None,
         performed_by=performer,
-        created_at=now,
     )
-    db.add(audit_entry)
 
-    db.commit()
     return {"detail": "Plan deleted successfully", "id": id}

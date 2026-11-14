@@ -9,7 +9,8 @@ from typing import Set, Dict, List
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models import Subscription, SubscriptionStatus, AuditLog, utc_now
+from app.models import Subscription, SubscriptionStatus, utc_now
+from app.services.audit import log_system_event
 
 
 class InvalidStateTransitionError(HTTPException):
@@ -129,18 +130,28 @@ def transition_subscription(
             cycle.status = BillingCycleStatus.COMPLETED.value
             cycle.updated_at = now
 
-    # Write AuditLog
-    audit_entry = AuditLog(
-        entity_type="subscription",
-        entity_id=subscription.id,
-        action=action,
-        old_value={"status": old_status},
-        new_value={"status": new_status},
-        performed_by=performed_by,
-        created_at=now,
-    )
-    db.add(audit_entry)
+    # Determine standard action name if generic
+    resolved_action = action
+    if resolved_action == "STATUS_CHANGE":
+        if new_status == SubscriptionStatus.PAUSED.value:
+            resolved_action = "SUBSCRIPTION_PAUSED"
+        elif new_status == SubscriptionStatus.ACTIVE.value:
+            resolved_action = "SUBSCRIPTION_RESUMED"
+        elif new_status == SubscriptionStatus.CANCELLED.value:
+            resolved_action = "SUBSCRIPTION_CANCELLED"
 
     db.commit()
     db.refresh(subscription)
+
+    # Write AuditLog via centralized service
+    log_system_event(
+        db=db,
+        entity_type="subscription",
+        entity_id=subscription.id,
+        action=resolved_action,
+        old_value={"status": old_status},
+        new_value={"status": new_status},
+        performed_by=performed_by,
+    )
+
     return subscription

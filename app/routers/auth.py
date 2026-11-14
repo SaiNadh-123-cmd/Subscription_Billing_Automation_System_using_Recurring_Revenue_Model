@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Customer, AuditLog, Subscription, Plan, SubscriptionStatus, utc_now
+from app.models import Customer, Subscription, Plan, SubscriptionStatus, utc_now
 from app.schemas import SignupRequest, SigninRequest, TokenResponse, UserResponse
+from app.services.audit import log_system_event
 from app.auth import (
     hash_password,
     verify_password,
@@ -97,17 +98,16 @@ def signup(
     db.add(sub)
 
     # Audit log
-    audit_entry = AuditLog(
+    db.commit()
+    log_system_event(
+        db=db,
         entity_type="customer",
         entity_id=customer.id,
-        action="CREATE",
+        action="CUSTOMER_CREATED",
         old_value=None,
         new_value={"name": customer.name, "email": customer.email, "role": customer.role},
         performed_by="signup_form",
-        created_at=now,
     )
-    db.add(audit_entry)
-    db.commit()
 
     token = create_access_token(
         data={"sub": customer.email, "id": customer.id, "role": customer.role}
@@ -174,18 +174,15 @@ async def signin(
         )
 
     # Audit log login event
-    now = utc_now()
-    audit_entry = AuditLog(
+    log_system_event(
+        db=db,
         entity_type="customer",
         entity_id=customer.id,
-        action="LOGIN",
+        action="CUSTOMER_LOGIN",
         old_value=None,
         new_value={"ip": request.client.host if request.client else "unknown"},
         performed_by=customer.email,
-        created_at=now,
     )
-    db.add(audit_entry)
-    db.commit()
 
     token = create_access_token(
         data={"sub": customer.email, "id": customer.id, "role": customer.role}
