@@ -58,6 +58,29 @@ Mounted under `/subscriptions`:
 - `POST /subscriptions/{id}/pause`: Temporarily halt subscription from `trial` or `active`.
 - `POST /subscriptions/{id}/resume`: Reactivate a `paused` subscription.
 - `POST /subscriptions/{id}/cancel`: Move to terminal `cancelled` state, set `end_date`, and complete pending billing cycles.
+### 7.  Billing Cycle Engine & Audit Logging (Task 9 & 10)
+Objective 1:
+Generate billing cycle records.
+
+Requirements:
+Monthly plans create next renewal date
+Annual plans create next renewal date
+Store billing cycle history
+
+Deliverable
+Billing cycle calculation service.
+objective 2:
+Track every important action.
+Log Events
+Plan created
+Plan updated
+Customer created
+Subscription created
+Plan changed
+Subscription cancelled
+
+Deliverable
+Audit logs automatically generated.
 
 ---
 
