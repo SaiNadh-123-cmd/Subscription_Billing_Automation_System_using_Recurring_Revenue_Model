@@ -17,6 +17,8 @@ from app.models import (
     BillingCycle,
     BillingCycleStatus,
     AuditLog,
+    ProrationAdjustment,
+    Invoice,
     SubscriptionStatus,
     utc_now,
 )
@@ -24,6 +26,10 @@ from app.schemas import (
     SubscriptionResponse,
     CreateSubscriptionRequest,
     SubscriptionPlanChangeRequest,
+    SubscriptionPlanChangeResponse,
+    ProrationPreviewResponse,
+    ProrationAdjustmentResponse,
+    PlanChangeHistoryItem,
     SubscriptionTransitionRequest,
     SubscriptionTransitionsResponse,
     AuditLogResponse,
@@ -35,6 +41,7 @@ from app.services.state_machine import (
     validate_transition,
 )
 from app.services.audit import log_system_event
+from app.services.proration import ProrationService
 
 router = APIRouter(tags=["Subscriptions"])
 
@@ -227,10 +234,57 @@ def create_subscription(
 # Subscription Lifecycle Operations
 # ==========================================
 
+@router.get(
+    "/{id}/proration-preview",
+    response_model=ProrationPreviewResponse,
+    summary="Preview proration credit, charge, and amount due for a plan change",
+)
+def preview_plan_change_proration(
+    id: int,
+    new_plan_id: int = Query(..., description="Target plan ID to preview"),
+    db: Session = Depends(get_db),
+):
+    """
+    Calculates fair mid-cycle proration preview without committing changes:
+    - Calculates remaining days in current billing cycle
+    - Calculates unused current plan credit
+    - Calculates new plan charge for remaining days
+    - Computes net amount due
+    """
+    sub = db.query(Subscription).filter(Subscription.id == id).first()
+    if not sub:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Subscription with ID {id} not found.",
+        )
+
+    if sub.status == SubscriptionStatus.CANCELLED.value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot preview plan change for a cancelled subscription.",
+        )
+
+    new_plan = db.query(Plan).filter(Plan.id == new_plan_id).first()
+    if not new_plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Plan with ID {new_plan_id} not found.",
+        )
+
+    if new_plan.is_archived:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot switch to an archived plan. Please choose an active plan.",
+        )
+
+    calc = ProrationService.calculate_proration(sub=sub, new_plan=new_plan, db=db)
+    return ProrationPreviewResponse(**calc)
+
+
 @router.post(
     "/{id}/change-plan",
-    response_model=SubscriptionResponse,
-    summary="Change plan for an active subscription",
+    response_model=SubscriptionPlanChangeResponse,
+    summary="Change plan for an active subscription with fair proration",
 )
 def change_subscription_plan(
     id: int,
@@ -239,11 +293,13 @@ def change_subscription_plan(
     db: Session = Depends(get_db),
 ):
     """
-    Plan Change Operation:
+    Plan Change Operation with Proration:
     - Validates subscription exists and is not cancelled.
     - Validates target plan exists and is not archived.
-    - Updates subscription.plan_id and recalculates end_date if active.
-    - Writes AuditLog with action="PLAN_CHANGED".
+    - Calculates unused credit, remaining charge, and net amount due.
+    - Generates adjustment invoice if net amount due > 0.
+    - Records ProrationAdjustment and AuditLog (action="PLAN_CHANGED").
+    - Updates subscription.plan_id and returns updated subscription with proration details.
     """
     sub = db.query(Subscription).filter(Subscription.id == id).first()
     if not sub:
@@ -271,31 +327,105 @@ def change_subscription_plan(
             detail="Cannot switch to an archived plan. Please choose an active plan.",
         )
 
-    old_plan_id = sub.plan_id
-    sub.plan_id = new_plan.id
-    now = utc_now()
-    sub.updated_at = now
-
-    # Recalculate end_date if active
-    if sub.status == SubscriptionStatus.ACTIVE.value:
-        duration = 365 if new_plan.billing_interval == "yearly" else 30
-        sub.end_date = now + timedelta(days=duration)
-
-    db.commit()
-    db.refresh(sub)
-
     performer = current_user.email if current_user else "system"
-    log_system_event(
+    updated_sub, adjustment, inv = ProrationService.execute_plan_change(
         db=db,
-        entity_type="subscription",
-        entity_id=sub.id,
-        action="PLAN_CHANGED",
-        old_value=str(old_plan_id),
-        new_value=str(new_plan.id),
-        performed_by=performer,
+        sub=sub,
+        new_plan=new_plan,
+        performer=performer,
     )
 
-    return _build_sub_response(sub)
+    base_resp = _build_sub_response(updated_sub)
+
+    adj_resp = None
+    if adjustment:
+        adj_resp = ProrationAdjustmentResponse(
+            id=adjustment.id,
+            subscription_id=adjustment.subscription_id,
+            customer_id=adjustment.customer_id,
+            old_plan_id=adjustment.old_plan_id,
+            new_plan_id=adjustment.new_plan_id,
+            old_plan_name=adjustment.old_plan_name,
+            new_plan_name=adjustment.new_plan_name,
+            remaining_days=adjustment.remaining_days,
+            total_days=adjustment.total_days,
+            unused_credit=adjustment.unused_credit,
+            new_plan_charge=adjustment.new_plan_charge,
+            net_amount_due=adjustment.net_amount_due,
+            invoice_id=inv.id if inv else None,
+            invoice_number=inv.invoice_number if inv else None,
+            created_at=adjustment.created_at,
+        )
+
+    return SubscriptionPlanChangeResponse(
+        id=base_resp.id,
+        customer_id=base_resp.customer_id,
+        plan_id=base_resp.plan_id,
+        status=base_resp.status,
+        start_date=base_resp.start_date,
+        end_date=base_resp.end_date,
+        trial_end_date=base_resp.trial_end_date,
+        paused_at=base_resp.paused_at,
+        activated_at=base_resp.activated_at,
+        cancelled_at=base_resp.cancelled_at,
+        status_changed_at=base_resp.status_changed_at,
+        created_at=base_resp.created_at,
+        updated_at=base_resp.updated_at,
+        plan_name=base_resp.plan_name,
+        plan_price=base_resp.plan_price,
+        allowed_transitions=base_resp.allowed_transitions,
+        proration=adj_resp,
+        invoice_id=inv.id if inv else None,
+        invoice_number=inv.invoice_number if inv else None,
+    )
+
+
+@router.get(
+    "/{id}/plan-history",
+    response_model=List[PlanChangeHistoryItem],
+    summary="Get plan change and proration history for a subscription",
+)
+def get_plan_change_history(
+    id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the historical plan changes and proration adjustments for this subscription.
+    """
+    sub = db.query(Subscription).filter(Subscription.id == id).first()
+    if not sub:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Subscription with ID {id} not found.",
+        )
+
+    adjustments = (
+        db.query(ProrationAdjustment)
+        .filter(ProrationAdjustment.subscription_id == id)
+        .order_by(ProrationAdjustment.created_at.desc())
+        .all()
+    )
+
+    items = []
+    for a in adjustments:
+        inv_num = a.invoice.invoice_number if a.invoice else None
+        dt_str = a.created_at.strftime("%d %b %Y") if a.created_at else None
+        items.append(
+            PlanChangeHistoryItem(
+                id=a.id,
+                old_plan_name=a.old_plan_name,
+                new_plan_name=a.new_plan_name,
+                remaining_days=a.remaining_days,
+                unused_credit=a.unused_credit,
+                new_plan_charge=a.new_plan_charge,
+                net_amount_due=a.net_amount_due,
+                invoice_id=a.invoice_id,
+                invoice_number=inv_num,
+                created_at=a.created_at,
+                formatted_date=dt_str,
+            )
+        )
+    return items
 
 
 @router.post(

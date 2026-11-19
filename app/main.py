@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, engine, run_migrations
 from app import models
-from app.routers import auth, plans, customers, subscriptions, billing, audit, pages
+from app.routers import auth, plans, customers, subscriptions, billing, invoices, audit, pages
 
 # Ensure base metadata tables exist and run safe non-destructive column migrations
 models.Base.metadata.create_all(bind=engine)
@@ -34,7 +34,11 @@ tags_metadata = [
     },
     {
         "name": "Billing",
-        "description": "Recurring billing engine, cycle renewals, and draft invoice generation.",
+        "description": "Recurring billing engine, cycle renewals, and cycle tracking.",
+    },
+    {
+        "name": "Billing & Invoices",
+        "description": "Automated invoice generation, filtering, line-item inspection, and PDF statement downloads.",
     },
     {
         "name": "System",
@@ -77,7 +81,11 @@ app.include_router(subscriptions.router, prefix="/api/subscriptions", include_in
 app.include_router(billing.router, prefix="/billing")
 app.include_router(billing.router, prefix="/api/billing", include_in_schema=False)
 
-# 7. Audit Logging System Router (Primary path /audit-logs, alias /api/audit-logs)
+# 7. Billing & Invoices Router (Primary path /api/invoices, alias /invoices)
+app.include_router(invoices.router, prefix="/api/invoices")
+app.include_router(invoices.router, prefix="/invoices", include_in_schema=False)
+
+# 8. Audit Logging System Router (Primary path /audit-logs, alias /api/audit-logs)
 app.include_router(audit.router, prefix="/audit-logs")
 app.include_router(audit.router, prefix="/api/audit-logs", include_in_schema=False)
 

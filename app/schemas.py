@@ -175,6 +175,86 @@ class SubscriptionPlanChangeRequest(BaseModel):
     new_plan_id: int = Field(..., example=2)
 
 
+class ProrationPreviewResponse(BaseModel):
+    subscription_id: int
+    current_plan_id: int
+    current_plan_name: str
+    current_plan_price: float
+    new_plan_id: int
+    new_plan_name: str
+    new_plan_price: float
+    billing_interval: str
+    remaining_days: int
+    total_cycle_days: int
+    unused_credit: float
+    new_plan_charge: float
+    net_amount_due: float
+    action_type: str  # "upgrade", "downgrade", "no_change"
+
+
+class ProrationAdjustmentResponse(BaseModel):
+    id: int
+    subscription_id: int
+    customer_id: int
+    old_plan_id: int
+    new_plan_id: int
+    old_plan_name: str
+    new_plan_name: str
+    remaining_days: int
+    total_days: int
+    unused_credit: float
+    new_plan_charge: float
+    net_amount_due: float
+    invoice_id: Optional[int] = None
+    invoice_number: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PlanChangeHistoryItem(BaseModel):
+    id: int
+    old_plan_name: str
+    new_plan_name: str
+    remaining_days: int
+    unused_credit: float
+    new_plan_charge: float
+    net_amount_due: float
+    invoice_id: Optional[int] = None
+    invoice_number: Optional[str] = None
+    created_at: datetime
+    formatted_date: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SubscriptionPlanChangeResponse(BaseModel):
+    id: int
+    customer_id: int
+    plan_id: int
+    status: str
+    start_date: datetime
+    end_date: Optional[datetime] = None
+    trial_end_date: Optional[datetime] = None
+    paused_at: Optional[datetime] = None
+    activated_at: Optional[datetime] = None
+    cancelled_at: Optional[datetime] = None
+    status_changed_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    plan_name: Optional[str] = None
+    plan_price: Optional[float] = None
+    allowed_transitions: Optional[List[str]] = None
+    proration: Optional[ProrationAdjustmentResponse] = None
+    invoice_id: Optional[int] = None
+    invoice_number: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class SubscriptionTransitionRequest(BaseModel):
     new_status: str = Field(
         ...,
@@ -231,6 +311,7 @@ class InvoiceResponse(BaseModel):
     invoice_number: str
     subscription_id: int
     customer_id: int
+    billing_cycle_id: Optional[int] = None
     invoice_date: datetime
     due_date: datetime
     subtotal: float
@@ -242,6 +323,37 @@ class InvoiceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class InvoiceListItemResponse(InvoiceResponse):
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    customer_company: Optional[str] = None
+    plan_name: Optional[str] = None
+    billing_interval: Optional[str] = None
+
+
+class InvoiceLineItem(BaseModel):
+    description: str
+    plan_name: str
+    billing_interval: str
+    quantity: int = 1
+    unit_price: float
+    amount: float
+
+
+class InvoiceDetailResponse(InvoiceListItemResponse):
+    subscription_status: Optional[str] = None
+    cycle_start_date: Optional[datetime] = None
+    cycle_end_date: Optional[datetime] = None
+    tax_rate: float = 0.18
+    line_items: List[InvoiceLineItem] = []
+
+
+class InvoiceGenerationResponse(BaseModel):
+    generated_count: int
+    skipped_count: int
+    invoices: List[InvoiceListItemResponse] = []
 
 
 class BillingCycleResponse(BaseModel):

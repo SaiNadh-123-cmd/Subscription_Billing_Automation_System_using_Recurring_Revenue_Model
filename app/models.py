@@ -199,6 +199,7 @@ class Subscription(Base):
     plan = relationship("Plan", back_populates="subscriptions")
     billing_cycles = relationship("BillingCycle", back_populates="subscription", cascade="all, delete-orphan")
     invoices = relationship("Invoice", back_populates="subscription", cascade="all, delete-orphan")
+    proration_adjustments = relationship("ProrationAdjustment", back_populates="subscription", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Subscription(id={self.id}, customer_id={self.customer_id}, plan_id={self.plan_id}, status='{self.status}')>"
@@ -236,6 +237,7 @@ class BillingCycle(Base):
 
     # Relationships
     subscription = relationship("Subscription", back_populates="billing_cycles")
+    invoices = relationship("Invoice", back_populates="billing_cycle")
 
     def __repr__(self) -> str:
         return f"<BillingCycle(id={self.id}, subscription_id={self.subscription_id}, status='{self.status}')>"
@@ -255,12 +257,13 @@ class Invoice(Base):
     invoice_number = Column(String(50), unique=True, index=True, nullable=False)
     subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
     customer_id = Column(Integer, ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True)
+    billing_cycle_id = Column(Integer, ForeignKey("billing_cycles.id", ondelete="SET NULL"), nullable=True, index=True)
     invoice_date = Column(DateTime(timezone=True), nullable=False)
     due_date = Column(DateTime(timezone=True), nullable=False)
     subtotal = Column(Float, nullable=False, default=0.0)
     tax_amount = Column(Float, nullable=False, default=0.0)
     total_amount = Column(Float, nullable=False, default=0.0)
-    status = Column(String(20), nullable=False, default=InvoiceStatus.DRAFT.value, index=True)
+    status = Column(String(20), nullable=False, default=InvoiceStatus.UNPAID.value, index=True)
     created_at = Column(
         DateTime(timezone=True),
         default=utc_now,
@@ -278,6 +281,7 @@ class Invoice(Base):
     # Relationships
     subscription = relationship("Subscription", back_populates="invoices")
     customer = relationship("Customer", back_populates="invoices")
+    billing_cycle = relationship("BillingCycle", back_populates="invoices")
     payments = relationship("Payment", back_populates="invoice", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
@@ -348,3 +352,46 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog(id={self.id}, entity='{self.entity_type}#{self.entity_id}', action='{self.action}')>"
+
+
+# ==========================================
+# 8. ProrationAdjustment Model
+# ==========================================
+
+class ProrationAdjustment(Base):
+    """
+    Prorated financial adjustment record created during mid-cycle subscription plan upgrades or downgrades.
+    Calculates unused current plan credit, remaining new plan charge, and net amount due.
+    """
+    __tablename__ = "proration_adjustments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True)
+    old_plan_id = Column(Integer, ForeignKey("plans.id", ondelete="RESTRICT"), nullable=False, index=True)
+    new_plan_id = Column(Integer, ForeignKey("plans.id", ondelete="RESTRICT"), nullable=False, index=True)
+    old_plan_name = Column(String(100), nullable=False)
+    new_plan_name = Column(String(100), nullable=False)
+    remaining_days = Column(Integer, nullable=False, default=0)
+    total_days = Column(Integer, nullable=False, default=30)
+    unused_credit = Column(Float, nullable=False, default=0.0)
+    new_plan_charge = Column(Float, nullable=False, default=0.0)
+    net_amount_due = Column(Float, nullable=False, default=0.0)
+    invoice_id = Column(Integer, ForeignKey("invoices.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Relationships
+    subscription = relationship("Subscription", back_populates="proration_adjustments")
+    customer = relationship("Customer")
+    old_plan = relationship("Plan", foreign_keys=[old_plan_id])
+    new_plan = relationship("Plan", foreign_keys=[new_plan_id])
+    invoice = relationship("Invoice")
+
+    def __repr__(self) -> str:
+        return f"<ProrationAdjustment(id={self.id}, sub_id={self.subscription_id}, {self.old_plan_name}->{self.new_plan_name}, net={self.net_amount_due})>"
+

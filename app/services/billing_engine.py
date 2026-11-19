@@ -104,6 +104,7 @@ class BillingService:
                 invoice_number=invoice_num,
                 subscription_id=sub.id,
                 customer_id=sub.customer_id,
+                billing_cycle_id=new_cycle.id,
                 invoice_date=now,
                 due_date=now + timedelta(days=15),
                 subtotal=subtotal,
